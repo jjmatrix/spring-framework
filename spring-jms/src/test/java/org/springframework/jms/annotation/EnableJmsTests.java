@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2014 the original author or authors.
+ * Copyright 2002-2015 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,17 +29,22 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.PropertySource;
 import org.springframework.context.support.PropertySourcesPlaceholderConfigurer;
 import org.springframework.jms.config.JmsListenerContainerTestFactory;
 import org.springframework.jms.config.JmsListenerEndpointRegistrar;
 import org.springframework.jms.config.JmsListenerEndpointRegistry;
+import org.springframework.jms.config.MessageListenerTestContainer;
 import org.springframework.jms.config.SimpleJmsListenerEndpoint;
 import org.springframework.jms.listener.adapter.ListenerExecutionFailedException;
 import org.springframework.jms.listener.adapter.MessageListenerAdapter;
 import org.springframework.messaging.handler.annotation.support.DefaultMessageHandlerMethodFactory;
 import org.springframework.messaging.handler.annotation.support.MessageHandlerMethodFactory;
 import org.springframework.messaging.handler.annotation.support.MethodArgumentNotValidException;
+import org.springframework.stereotype.Component;
+
+import static org.junit.Assert.*;
 
 /**
  * @author Stephane Nicoll
@@ -48,6 +53,7 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 
 	@Rule
 	public final ExpectedException thrown = ExpectedException.none();
+
 
 	@Override
 	@Test
@@ -107,6 +113,22 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 		testJmsHandlerMethodFactoryConfiguration(context);
 	}
 
+	@Override
+	@Test
+	public void jmsListenerIsRepeatable() {
+		ConfigurableApplicationContext context = new AnnotationConfigApplicationContext(
+				EnableJmsDefaultContainerFactoryConfig.class, JmsListenerRepeatableBean.class);
+		testJmsListenerRepeatable(context);
+	}
+
+	@Override
+	@Test
+	public void jmsListeners() {
+		ConfigurableApplicationContext context = new AnnotationConfigApplicationContext(
+				EnableJmsDefaultContainerFactoryConfig.class, JmsListenersBean.class);
+		testJmsListenerRepeatable(context);
+	}
+
 	@Test
 	public void unknownFactory() {
 		thrown.expect(BeanCreationException.class);
@@ -114,6 +136,23 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 		new AnnotationConfigApplicationContext(
 				EnableJmsSampleConfig.class, CustomBean.class);
 	}
+
+	@Test
+	public void lazyComponent() {
+		ConfigurableApplicationContext context = new AnnotationConfigApplicationContext(
+				EnableJmsDefaultContainerFactoryConfig.class, LazyBean.class);
+		JmsListenerContainerTestFactory defaultFactory =
+				context.getBean("jmsListenerContainerFactory", JmsListenerContainerTestFactory.class);
+		assertEquals(0, defaultFactory.getListenerContainers().size());
+
+		context.getBean(LazyBean.class); // trigger lazy resolution
+		assertEquals(1, defaultFactory.getListenerContainers().size());
+		MessageListenerTestContainer container = defaultFactory.getListenerContainers().get(0);
+		assertTrue("Should have been started " + container, container.isStarted());
+		context.close(); // Close and stop the listeners
+		assertTrue("Should have been stopped " + container, container.isStopped());
+	}
+
 
 	@EnableJms
 	@Configuration
@@ -130,6 +169,7 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 		}
 	}
 
+
 	@EnableJms
 	@Configuration
 	static class EnableJmsFullConfig {
@@ -139,6 +179,7 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 			return new JmsListenerContainerTestFactory();
 		}
 	}
+
 
 	@EnableJms
 	@Configuration
@@ -155,6 +196,7 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 			return new PropertySourcesPlaceholderConfigurer();
 		}
 	}
+
 
 	@Configuration
 	@EnableJms
@@ -193,6 +235,7 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 		}
 	}
 
+
 	@Configuration
 	@EnableJms
 	static class EnableJmsCustomContainerFactoryConfig implements JmsListenerConfigurer {
@@ -208,6 +251,7 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 		}
 	}
 
+
 	@Configuration
 	@EnableJms
 	static class EnableJmsDefaultContainerFactoryConfig {
@@ -217,6 +261,7 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 			return new JmsListenerContainerTestFactory();
 		}
 	}
+
 
 	@Configuration
 	@EnableJms
@@ -237,6 +282,16 @@ public class EnableJmsTests extends AbstractJmsAnnotationDrivenTests {
 		@Bean
 		public JmsListenerContainerTestFactory defaultFactory() {
 			return new JmsListenerContainerTestFactory();
+		}
+	}
+
+
+	@Component
+	@Lazy
+	static class LazyBean {
+
+		@JmsListener(destination = "myQueue")
+		public void handle(String msg) {
 		}
 	}
 

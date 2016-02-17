@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2014 the original author or authors.
+ * Copyright 2002-2015 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -107,6 +107,7 @@ import org.springframework.util.StringUtils;
  *
  * @author Juergen Hoeller
  * @author Mark Fisher
+ * @author Stephane Nicoll
  * @since 2.5
  * @see #setAutowiredAnnotationType
  * @see Autowired
@@ -129,13 +130,13 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 	private ConfigurableListableBeanFactory beanFactory;
 
 	private final Set<String> lookupMethodsChecked =
-			Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>(64));
+			Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>(256));
 
 	private final Map<Class<?>, Constructor<?>[]> candidateConstructorsCache =
-			new ConcurrentHashMap<Class<?>, Constructor<?>[]>(64);
+			new ConcurrentHashMap<Class<?>, Constructor<?>[]>(256);
 
 	private final Map<String, InjectionMetadata> injectionMetadataCache =
-			new ConcurrentHashMap<String, InjectionMetadata>(64);
+			new ConcurrentHashMap<String, InjectionMetadata>(256);
 
 
 	/**
@@ -270,6 +271,19 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 					Constructor<?> defaultConstructor = null;
 					for (Constructor<?> candidate : rawCandidates) {
 						AnnotationAttributes ann = findAutowiredAnnotation(candidate);
+						if (ann == null) {
+							Class<?> userClass = ClassUtils.getUserClass(beanClass);
+							if (userClass != beanClass) {
+								try {
+									Constructor<?> superCtor =
+											userClass.getDeclaredConstructor(candidate.getParameterTypes());
+									ann = findAutowiredAnnotation(superCtor);
+								}
+								catch (NoSuchMethodException ex) {
+									// Simply proceed, no equivalent superclass constructor found...
+								}
+							}
+						}
 						if (ann != null) {
 							if (requiredConstructor != null) {
 								throw new BeanCreationException(beanName,
@@ -311,6 +325,9 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 							}
 						}
 						candidateConstructors = candidates.toArray(new Constructor<?>[candidates.size()]);
+					}
+					else if (rawCandidates.length == 1 && rawCandidates[0].getParameterTypes().length > 0) {
+						candidateConstructors = new Constructor<?>[] {rawCandidates[0]};
 					}
 					else {
 						candidateConstructors = new Constructor<?>[0];
@@ -380,48 +397,58 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 		return metadata;
 	}
 
-	private InjectionMetadata buildAutowiringMetadata(Class<?> clazz) {
+	private InjectionMetadata buildAutowiringMetadata(final Class<?> clazz) {
 		LinkedList<InjectionMetadata.InjectedElement> elements = new LinkedList<InjectionMetadata.InjectedElement>();
 		Class<?> targetClass = clazz;
 
 		do {
-			LinkedList<InjectionMetadata.InjectedElement> currElements = new LinkedList<InjectionMetadata.InjectedElement>();
-			for (Field field : targetClass.getDeclaredFields()) {
-				AnnotationAttributes ann = findAutowiredAnnotation(field);
-				if (ann != null) {
-					if (Modifier.isStatic(field.getModifiers())) {
-						if (logger.isWarnEnabled()) {
-							logger.warn("Autowired annotation is not supported on static fields: " + field);
+			final LinkedList<InjectionMetadata.InjectedElement> currElements =
+					new LinkedList<InjectionMetadata.InjectedElement>();
+
+			ReflectionUtils.doWithLocalFields(targetClass, new ReflectionUtils.FieldCallback() {
+				@Override
+				public void doWith(Field field) throws IllegalArgumentException, IllegalAccessException {
+					AnnotationAttributes ann = findAutowiredAnnotation(field);
+					if (ann != null) {
+						if (Modifier.isStatic(field.getModifiers())) {
+							if (logger.isWarnEnabled()) {
+								logger.warn("Autowired annotation is not supported on static fields: " + field);
+							}
+							return;
 						}
-						continue;
+						boolean required = determineRequiredStatus(ann);
+						currElements.add(new AutowiredFieldElement(field, required));
 					}
-					boolean required = determineRequiredStatus(ann);
-					currElements.add(new AutowiredFieldElement(field, required));
 				}
-			}
-			for (Method method : targetClass.getDeclaredMethods()) {
-				Method bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
-				if (!BridgeMethodResolver.isVisibilityBridgeMethodPair(method, bridgedMethod)) {
-					continue;
-				}
-				AnnotationAttributes ann = findAutowiredAnnotation(bridgedMethod);
-				if (ann != null && method.equals(ClassUtils.getMostSpecificMethod(method, clazz))) {
-					if (Modifier.isStatic(method.getModifiers())) {
-						if (logger.isWarnEnabled()) {
-							logger.warn("Autowired annotation is not supported on static methods: " + method);
+			});
+
+			ReflectionUtils.doWithLocalMethods(targetClass, new ReflectionUtils.MethodCallback() {
+				@Override
+				public void doWith(Method method) throws IllegalArgumentException, IllegalAccessException {
+					Method bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
+					if (!BridgeMethodResolver.isVisibilityBridgeMethodPair(method, bridgedMethod)) {
+						return;
+					}
+					AnnotationAttributes ann = findAutowiredAnnotation(bridgedMethod);
+					if (ann != null && method.equals(ClassUtils.getMostSpecificMethod(method, clazz))) {
+						if (Modifier.isStatic(method.getModifiers())) {
+							if (logger.isWarnEnabled()) {
+								logger.warn("Autowired annotation is not supported on static methods: " + method);
+							}
+							return;
 						}
-						continue;
-					}
-					if (method.getParameterTypes().length == 0) {
-						if (logger.isWarnEnabled()) {
-							logger.warn("Autowired annotation should be used on methods with actual parameters: " + method);
+						if (method.getParameterTypes().length == 0) {
+							if (logger.isWarnEnabled()) {
+								logger.warn("Autowired annotation should be used on methods with parameters: " + method);
+							}
 						}
+						boolean required = determineRequiredStatus(ann);
+						PropertyDescriptor pd = BeanUtils.findPropertyForMethod(bridgedMethod, clazz);
+						currElements.add(new AutowiredMethodElement(method, required, pd));
 					}
-					boolean required = determineRequiredStatus(ann);
-					PropertyDescriptor pd = BeanUtils.findPropertyForMethod(bridgedMethod, clazz);
-					currElements.add(new AutowiredMethodElement(method, required, pd));
 				}
-			}
+			});
+
 			elements.addAll(0, currElements);
 			targetClass = targetClass.getSuperclass();
 		}
@@ -431,10 +458,12 @@ public class AutowiredAnnotationBeanPostProcessor extends InstantiationAwareBean
 	}
 
 	private AnnotationAttributes findAutowiredAnnotation(AccessibleObject ao) {
-		for (Class<? extends Annotation> type : this.autowiredAnnotationTypes) {
-			AnnotationAttributes ann = AnnotatedElementUtils.getAnnotationAttributes(ao, type.getName());
-			if (ann != null) {
-				return ann;
+		if (ao.getAnnotations().length > 0) {
+			for (Class<? extends Annotation> type : this.autowiredAnnotationTypes) {
+				AnnotationAttributes attributes = AnnotatedElementUtils.getMergedAnnotationAttributes(ao, type);
+				if (attributes != null) {
+					return attributes;
+				}
 			}
 		}
 		return null;

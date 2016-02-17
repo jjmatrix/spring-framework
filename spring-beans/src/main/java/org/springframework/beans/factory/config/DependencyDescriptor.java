@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2014 the original author or authors.
+ * Copyright 2002-2016 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,10 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.util.Map;
 
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
 import org.springframework.core.GenericCollectionTypeResolver;
 import org.springframework.core.GenericTypeResolver;
 import org.springframework.core.MethodParameter;
@@ -180,6 +183,23 @@ public class DependencyDescriptor implements Serializable {
 		return this.eager;
 	}
 
+	/**
+	 * Resolve the specified not-unique scenario: by default,
+	 * throwing a {@link NoUniqueBeanDefinitionException}.
+	 * <p>Subclasses may override this to select one of the instances or
+	 * to opt out with no result at all through returning {@code null}.
+	 * @param type the requested bean type
+	 * @param matchingBeans a map of bean names and corresponding bean
+	 * instances which have been pre-selected for the given type
+	 * (qualifiers etc already applied)
+	 * @return a bean instance to proceed with, or {@code null} for none
+	 * @throws BeansException in case of the not-unique scenario being fatal
+	 * @since 4.3
+	 */
+	public Object resolveNotUnique(Class<?> type, Map<String, Object> matchingBeans) throws BeansException {
+		throw new NoUniqueBeanDefinitionException(type, matchingBeans.keySet());
+	}
+
 
 	/**
 	 * Increase this descriptor's nesting level.
@@ -196,6 +216,7 @@ public class DependencyDescriptor implements Serializable {
 	 * Optionally set the concrete class that contains this dependency.
 	 * This may differ from the class that declares the parameter/field in that
 	 * it may be a subclass thereof, potentially substituting type variables.
+	 * @since 4.0
 	 */
 	public void setContainingClass(Class<?> containingClass) {
 		this.containingClass = containingClass;
@@ -206,6 +227,7 @@ public class DependencyDescriptor implements Serializable {
 
 	/**
 	 * Build a ResolvableType object for the wrapped parameter/field.
+	 * @since 4.0
 	 */
 	public ResolvableType getResolvableType() {
 		return (this.field != null ? ResolvableType.forField(this.field, this.nestingLevel, this.containingClass) :
@@ -217,6 +239,7 @@ public class DependencyDescriptor implements Serializable {
 	 * <p>This is {@code false} by default but may be overridden to return {@code true} in order
 	 * to suggest to a {@link org.springframework.beans.factory.support.AutowireCandidateResolver}
 	 * that a fallback match is acceptable as well.
+	 * @since 4.0
 	 */
 	public boolean fallbackMatchAllowed() {
 		return false;
@@ -224,6 +247,7 @@ public class DependencyDescriptor implements Serializable {
 
 	/**
 	 * Return a variant of this descriptor that is intended for a fallback match.
+	 * @since 4.0
 	 * @see #fallbackMatchAllowed()
 	 */
 	public DependencyDescriptor forFallbackMatch() {
